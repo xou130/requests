@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 
+import os
 from io import BytesIO
 
 import pytest
 from requests import compat
+from requests.cookies import RequestsCookieJar
 from requests.structures import CaseInsensitiveDict
 from requests.utils import (
     address_in_network, dotted_netmask,
@@ -15,7 +17,8 @@ from requests.utils import (
     requote_uri, select_proxy, should_bypass_proxies, super_len,
     to_key_val_list, to_native_string,
     unquote_header_value, unquote_unreserved,
-    urldefragauth)
+    urldefragauth, add_dict_to_cookiejar)
+from requests._internal_utils import unicode_is_ascii
 
 from .compat import StringIO, cStringIO
 
@@ -159,7 +162,7 @@ class TestGetEnvironProxies:
             'http://localhost.localdomain:5000/v1.0/',
         ))
     def test_bypass(self, url):
-        assert get_environ_proxies(url) == {}
+        assert get_environ_proxies(url, no_proxy=None) == {}
 
     @pytest.mark.parametrize(
         'url', (
@@ -168,7 +171,32 @@ class TestGetEnvironProxies:
             'http://www.requests.com/',
         ))
     def test_not_bypass(self, url):
-        assert get_environ_proxies(url) != {}
+        assert get_environ_proxies(url, no_proxy=None) != {}
+
+    @pytest.mark.parametrize(
+        'url', (
+            'http://192.168.1.1:5000/',
+            'http://192.168.1.1/',
+            'http://www.requests.com/',
+        ))
+    def test_bypass_no_proxy_keyword(self, url):
+        no_proxy = '192.168.1.1,requests.com'
+        assert get_environ_proxies(url, no_proxy=no_proxy) == {}
+
+    @pytest.mark.parametrize(
+        'url', (
+            'http://192.168.0.1:5000/',
+            'http://192.168.0.1/',
+            'http://172.16.1.1/',
+            'http://172.16.1.1:5000/',
+            'http://localhost.localdomain:5000/v1.0/',
+        ))
+    def test_not_bypass_no_proxy_keyword(self, url, monkeypatch):
+        # This is testing that the 'no_proxy' argument overrides the
+        # environment variable 'no_proxy'
+        monkeypatch.setenv('http_proxy', 'http://proxy.example.com:3128/')
+        no_proxy = '192.168.1.1,requests.com'
+        assert get_environ_proxies(url, no_proxy=no_proxy) != {}
 
 
 class TestIsIPv4Address:
@@ -272,6 +300,17 @@ class TestGuessJSONUTF:
     def test_bad_utf_like_encoding(self):
         assert guess_json_utf(b'\x00\x00\x00\x00') is None
 
+    @pytest.mark.parametrize(
+        ('encoding', 'expected'), (
+            ('utf-16-be', 'utf-16'),
+            ('utf-16-le', 'utf-16'),
+            ('utf-32-be', 'utf-32'),
+            ('utf-32-le', 'utf-32')
+        ))
+    def test_guess_by_bom(self, encoding, expected):
+        data = u'\ufeff{}'.encode(encoding)
+        assert guess_json_utf(data) == expected
+
 
 USER = PASSWORD = "%!*'();:@&=+$,/?#[] "
 ENCODED_USER = compat.quote(USER, '')
@@ -328,7 +367,7 @@ def test_get_auth_from_url(url, auth):
         ),
     ))
 def test_requote_uri_with_unquoted_percents(uri, expected):
-    """See: https://github.com/kennethreitz/requests/issues/2356"""
+    """See: https://github.com/requests/requests/issues/2356"""
     assert requote_uri(uri) == expected
 
 
@@ -512,4 +551,104 @@ def test_should_bypass_proxies(url, expected, monkeypatch):
     """
     monkeypatch.setenv('no_proxy', '192.168.0.0/24,127.0.0.1,localhost.localdomain,172.16.1.1')
     monkeypatch.setenv('NO_PROXY', '192.168.0.0/24,127.0.0.1,localhost.localdomain,172.16.1.1')
-    assert should_bypass_proxies(url) == expected
+    assert should_bypass_proxies(url, no_proxy=None) == expected
+
+
+@pytest.mark.parametrize(
+    'cookiejar', (
+        compat.cookielib.CookieJar(),
+        RequestsCookieJar()
+    ))
+def test_add_dict_to_cookiejar(cookiejar):
+    """Ensure add_dict_to_cookiejar works for
+    non-RequestsCookieJar CookieJars
+    """
+    cookiedict = {'test': 'cookies',
+                  'good': 'cookies'}
+    cj = add_dict_to_cookiejar(cookiejar, cookiedict)
+    cookies = dict((cookie.name, cookie.value) for cookie in cj)
+    assert cookiedict == cookies
+
+
+@pytest.mark.parametrize(
+    'value, expected', (
+                (u'test', True),
+                (u'æíöû', False),
+                (u'ジェーピーニック', False),
+    )
+)
+def test_unicode_is_ascii(value, expected):
+    assert unicode_is_ascii(value) is expected
+
+
+@pytest.mark.parametrize(
+    'url, expected', (
+            ('http://192.168.0.1:5000/', True),
+            ('http://192.168.0.1/', True),
+            ('http://172.16.1.1/', True),
+            ('http://172.16.1.1:5000/', True),
+            ('http://localhost.localdomain:5000/v1.0/', True),
+            ('http://172.16.1.12/', False),
+            ('http://172.16.1.12:5000/', False),
+            ('http://google.com:5000/v1.0/', False),
+    ))
+def test_should_bypass_proxies_no_proxy(
+        url, expected, monkeypatch):
+    """Tests for function should_bypass_proxies to check if proxy
+    can be bypassed or not using the 'no_proxy' argument
+    """
+    no_proxy = '192.168.0.0/24,127.0.0.1,localhost.localdomain,172.16.1.1'
+    # Test 'no_proxy' argument
+    assert should_bypass_proxies(url, no_proxy=no_proxy) == expected
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Test only on Windows')
+@pytest.mark.parametrize(
+    'url, expected, override', (
+            ('http://192.168.0.1:5000/', True, None),
+            ('http://192.168.0.1/', True, None),
+            ('http://172.16.1.1/', True, None),
+            ('http://172.16.1.1:5000/', True, None),
+            ('http://localhost.localdomain:5000/v1.0/', True, None),
+            ('http://172.16.1.22/', False, None),
+            ('http://172.16.1.22:5000/', False, None),
+            ('http://google.com:5000/v1.0/', False, None),
+            ('http://mylocalhostname:5000/v1.0/', True, '<local>'),
+            ('http://192.168.0.1/', False, ''),
+    ))
+def test_should_bypass_proxies_win_registry(url, expected, override,
+                                            monkeypatch):
+    """Tests for function should_bypass_proxies to check if proxy
+    can be bypassed or not with Windows registry settings
+    """
+    if override is None:
+        override = '192.168.*;127.0.0.1;localhost.localdomain;172.16.1.1'
+    if compat.is_py3:
+        import winreg
+    else:
+        import _winreg as winreg
+
+    class RegHandle:
+        def Close(self):
+            pass
+
+    ie_settings = RegHandle()
+
+    def OpenKey(key, subkey):
+        return ie_settings
+
+    def QueryValueEx(key, value_name):
+        if key is ie_settings:
+            if value_name == 'ProxyEnable':
+                return [1]
+            elif value_name == 'ProxyOverride':
+                return [override]
+
+    monkeypatch.setenv('http_proxy', '')
+    monkeypatch.setenv('https_proxy', '')
+    monkeypatch.setenv('ftp_proxy', '')
+    monkeypatch.setenv('no_proxy', '')
+    monkeypatch.setenv('NO_PROXY', '')
+    monkeypatch.setattr(winreg, 'OpenKey', OpenKey)
+    monkeypatch.setattr(winreg, 'QueryValueEx', QueryValueEx)
+    assert should_bypass_proxies(url, no_proxy=None) == expected

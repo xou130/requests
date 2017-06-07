@@ -6,7 +6,7 @@ requests.exceptions
 
 This module contains the set of Requests' exceptions.
 """
-from .packages.urllib3.exceptions import HTTPError as BaseHTTPError
+from urllib3.exceptions import HTTPError as BaseHTTPError
 
 
 class RequestException(IOError):
@@ -100,6 +100,9 @@ class StreamConsumedError(RequestException, TypeError):
 class RetryError(RequestException):
     """Custom retries logic failed"""
 
+
+class UnrewindableBodyError(RequestException):
+    """Requests encountered an error when trying to rewind a body"""
 
 # Warnings
 

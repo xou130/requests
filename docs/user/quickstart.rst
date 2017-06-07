@@ -57,8 +57,8 @@ Passing Parameters In URLs
 You often want to send some sort of data in the URL's query string. If
 you were constructing the URL by hand, this data would be given as key/value
 pairs in the URL after a question mark, e.g. ``httpbin.org/get?key=val``.
-Requests allows you to provide these arguments as a dictionary, using the
-``params`` keyword argument. As an example, if you wanted to pass
+Requests allows you to provide these arguments as a dictionary of strings,
+using the ``params`` keyword argument. As an example, if you wanted to pass
 ``key1=value1`` and ``key2=value2`` to ``httpbin.org/get``, you would use the
 following code::
 
@@ -178,13 +178,14 @@ In general, however, you should use a pattern like this to save what is being
 streamed to a file::
 
     with open(filename, 'wb') as fd:
-        for chunk in r.iter_content(chunk_size):
+        for chunk in r.iter_content(chunk_size=128):
             fd.write(chunk)
 
 Using ``Response.iter_content`` will handle a lot of what you would otherwise
 have to handle when using ``Response.raw`` directly. When streaming a
 download, the above is the preferred and recommended way to retrieve the
-content.
+content. Note that ``chunk_size`` can be freely adjusted to a number that
+may better fit your use cases.
 
 
 Custom Headers
@@ -233,7 +234,24 @@ dictionary of data will automatically be form-encoded when the request is made::
       ...
     }
 
-There are many times that you want to send data that is not form-encoded. If
+You can also pass a list of tuples to the ``data`` argument. This is particularly
+useful when the form has multiple elements that use the same key::
+
+    >>> payload = (('key1', 'value1'), ('key1', 'value2'))
+    >>> r = requests.post('http://httpbin.org/post', data=payload)
+    >>> print(r.text)
+    {
+      ...
+      "form": {
+        "key1": [
+          "value1",
+          "value2"
+        ]
+      },
+      ...
+    }
+
+There are times that you may want to send data that is not form-encoded. If
 you pass in a ``string`` instead of a ``dict``, that data will be posted directly.
 
 For example, the GitHub API v3 accepts JSON-Encoded POST/PATCH data::
@@ -423,8 +441,8 @@ suitable for use over multiple domains or paths.  Cookie jars can
 also be passed in to requests::
 
     >>> jar = requests.cookies.RequestsCookieJar()
-    >>> jar.set('tasty_cookie', 'yum', site='httpbin.org', path='/cookies')
-    >>> jar.set('gross_cookie', 'blech', site='httpbin.org', path='/elsewhere')
+    >>> jar.set('tasty_cookie', 'yum', domain='httpbin.org', path='/cookies')
+    >>> jar.set('gross_cookie', 'blech', domain='httpbin.org', path='/elsewhere')
     >>> url = 'http://httpbin.org/cookies'
     >>> r = requests.get(url, cookies=jar)
     >>> r.text
@@ -484,7 +502,9 @@ Timeouts
 --------
 
 You can tell Requests to stop waiting for a response after a given number of
-seconds with the ``timeout`` parameter::
+seconds with the ``timeout`` parameter. Nearly all production code should use
+this parameter in nearly all requests. Failure to do so can cause your program
+to hang indefinitely::
 
     >>> requests.get('http://github.com', timeout=0.001)
     Traceback (most recent call last):
